@@ -378,3 +378,44 @@
   color: var(--dsw-alias-label-secondary);
   font-size: 14px;
 }
+
+/* 超长正文的纯文本降级视图：不再走 AST，避免生成巨量节点 */
+.md-plain-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-markdown-base);
+
+  pre {
+    margin: 0;
+    font: inherit;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    contain: content;
+  }
+}
+
+.md-plain-notice {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.md-plain-action {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-brand-text);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* 代码块滚动不再触发整页绘制失效：只限制 pre 的绘制范围 */
+.md-code-block pre {
+  contain: paint;
+}

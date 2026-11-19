@@ -1,11 +1,13 @@
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
+import { showToast } from '../../components/base/toastState.js'
 import { ApiError, streamMessage } from '../api/client.js'
 import type { ChatModel, CreateMessageRequest } from '../api/types.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
 import { useSettings } from '../settings.js'
 import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
+import { fitMessagesToBudget } from './contextBudget.js'
 import * as db from './db.js'
 import {
   clearAllDrafts,
@@ -179,48 +181,78 @@ const updateReply = (sessionId: string, reply: AssistantMessage) =>
     ),
   }))
 
-const persist = (sessionId: string) => {
+/** 落库合并窗口：长会话每次写入都要整包结构化克隆，短时间内多次修改合并成一次 */
+const PERSIST_DELAY = 250
+const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** 真正写库：读出当前内存态整包写入 IndexedDB */
+const writeSession = (sessionId: string) => {
   const session = getSession(sessionId)
-  if (session) {
-    unsavedSessions.add(sessionId)
-    if (deletingSessions.has(sessionId)) {
-      return
-    }
-    const epoch = historyEpoch
-    const files = pendingFiles.get(sessionId)
-    void db
-      .saveSession(session, files)
-      .then(() => {
-        if (epoch !== historyEpoch || !getSession(sessionId)) {
-          return
-        }
-        if (pendingFiles.get(sessionId) === files) {
-          pendingFiles.delete(sessionId)
-        }
-        if (getSession(sessionId) === session) {
-          unsavedSessions.delete(sessionId)
-          set((state) => ({
-            sessionSaveErrors: Object.fromEntries(
-              Object.entries(state.sessionSaveErrors).filter(([id]) => id !== sessionId)
-            ),
-          }))
-          trimSessionCache()
-        }
-      })
-      .catch((error: unknown) => {
-        db.reportStorageError('save session')(error)
-        if (epoch === historyEpoch && getSession(sessionId)) {
-          set((state) => ({
-            sessionSaveErrors: { ...state.sessionSaveErrors, [sessionId]: true },
-          }))
-        }
-      })
+  if (!session || deletingSessions.has(sessionId)) {
+    return
   }
+  const epoch = historyEpoch
+  const files = pendingFiles.get(sessionId)
+  void db
+    .saveSession(session, files)
+    .then(() => {
+      if (epoch !== historyEpoch || !getSession(sessionId)) {
+        return
+      }
+      if (pendingFiles.get(sessionId) === files) {
+        pendingFiles.delete(sessionId)
+      }
+      if (getSession(sessionId) === session) {
+        unsavedSessions.delete(sessionId)
+        set((state) => ({
+          sessionSaveErrors: Object.fromEntries(
+            Object.entries(state.sessionSaveErrors).filter(([id]) => id !== sessionId)
+          ),
+        }))
+        trimSessionCache()
+      }
+    })
+    .catch((error: unknown) => {
+      db.reportStorageError('save session')(error)
+      if (epoch === historyEpoch && getSession(sessionId)) {
+        set((state) => ({
+          sessionSaveErrors: { ...state.sessionSaveErrors, [sessionId]: true },
+        }))
+      }
+    })
+}
+
+/** 标记待保存并排队写库；同一会话的连续修改只写一次 */
+const persist = (sessionId: string) => {
+  if (!getSession(sessionId)) {
+    return
+  }
+  unsavedSessions.add(sessionId)
+  if (persistTimers.has(sessionId)) {
+    return
+  }
+  persistTimers.set(
+    sessionId,
+    setTimeout(() => {
+      persistTimers.delete(sessionId)
+      writeSession(sessionId)
+    }, PERSIST_DELAY)
+  )
+}
+
+/** 立即写库：页面隐藏、导入替换前等不能等合并窗口的场景 */
+const flushPersist = (sessionId: string) => {
+  const timer = persistTimers.get(sessionId)
+  if (timer !== undefined) {
+    clearTimeout(timer)
+    persistTimers.delete(sessionId)
+  }
+  writeSession(sessionId)
 }
 
 export const retrySaveSessions = () => {
   if (!get().importingHistory) {
-    unsavedSessions.forEach(persist)
+    unsavedSessions.forEach(flushPersist)
   }
 }
 
@@ -232,11 +264,11 @@ export const bindChatPersistence = () => {
     }
     for (const [id, flush] of streamFlushes) {
       flush()
-      persist(id)
+      flushPersist(id)
     }
     for (const id of unsavedSessions) {
       if (!streamFlushes.has(id)) {
-        persist(id)
+        flushPersist(id)
       }
     }
   }
@@ -989,19 +1021,26 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
         persist(sessionId)
-        const messages = toRequestMessages(
-          prepared.history,
-          prepared.question,
-          prepared.prefix,
-          initial.thinking ?? false,
-          latestReminder
+        const budgeted = fitMessagesToBudget(
+          toRequestMessages(
+            prepared.history,
+            prepared.question,
+            prepared.prefix,
+            initial.thinking ?? false,
+            latestReminder
+          )
         )
+        if (budgeted.droppedRounds > 0) {
+          showToast({ key: 'contextTrimmed', params: { rounds: budgeted.droppedRounds } })
+        } else if (budgeted.truncated) {
+          showToast({ key: 'contextClipped' })
+        }
         const events = streamMessage(
           useSettings.getState().apiKey ?? '',
           {
             model: initial.model ?? MODEL,
             system: SYSTEM_PROMPT,
-            messages,
+            messages: budgeted.messages,
             thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
             safety_check: SAFETY_CHECK,
             tools: serverTools(initial.search ?? false),

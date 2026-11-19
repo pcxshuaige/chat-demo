@@ -20,6 +20,7 @@ import { Toast } from '../components/base/Toast.js'
 import { showToast } from '../components/base/toastState.js'
 import { onUploadNotice } from '../services/attachments.js'
 import { Button } from '../components/base/Button.js'
+import { ErrorBoundary } from '../components/base/ErrorBoundary.js'
 import { stopReadAloud } from '../services/speech/readAloud.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
 import { closeMobileSider } from '../components/sider/mobileSiderState.js'
@@ -120,11 +121,14 @@ export const App = () => {
                 </div>
               </div>
             ) : session ? (
-              <SessionView
-                session={session}
-                streaming={streaming}
-                siderCollapsed={siderCollapsed}
-              />
+              // 渲染兜底：单条消息渲染失败时只降级这一块，不让整页白屏
+              <ErrorBoundary resetKey={session.id}>
+                <SessionView
+                  session={session}
+                  streaming={streaming}
+                  siderCollapsed={siderCollapsed}
+                />
+              </ErrorBoundary>
             ) : (
               <Welcome />
             )}

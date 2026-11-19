@@ -35,3 +35,13 @@
   margin: 0 auto;
   padding-bottom: 24px;
 }
+
+/*
+ * 单条消息的渲染隔离：视口外的消息跳过布局与绘制，
+ * 长历史下不再因为一条消息变化而重排整列。
+ * contain-intrinsic-size 用 auto 记住上一次的真实高度，减少滚动跳动。
+ */
+.row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}

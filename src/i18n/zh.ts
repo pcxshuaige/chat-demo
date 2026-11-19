@@ -169,4 +169,12 @@ export const zh = {
   latestReminderLanguage: '中文',
   settingsLocaleZhCN: '简体中文',
   settingsLocaleEnUS: 'English',
+  contextTrimmed: '历史较长，已省略最早的 {rounds} 轮对话以适配模型上下文',
+  contextTruncated: '……（内容过长，此处省略 {count} 字符）……',
+  contextClipped: '有单条消息过长，已截断后发送',
+  markdownPlainNotice: '内容较长，已切换为纯文本显示以保证流畅',
+  markdownPlainAction: '格式化渲染',
+  mermaidTooLarge: '流程图代码过长，已改为代码显示',
+  renderCrashTitle: '这段对话渲染出错，已降级显示',
+  renderCrashDetail: '刷新后仍然出错时，可在设置里导出备份，再新建对话继续',
 } as const

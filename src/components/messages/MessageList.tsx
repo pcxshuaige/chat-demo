@@ -60,13 +60,33 @@ export const MessageList = ({
     setPreviousVersions(versions)
   }
   const lastMessageId = messages.at(-1)?.id
+  const frameRef = useRef(0)
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current
-    if (el && stickyRef.current) {
-      el.scrollTop = el.scrollHeight
-      scrollTopRef.current = el.scrollTop
+    if (!el || !stickyRef.current) {
+      return
     }
+    // 已经贴底时不再写入滚动位置：ResizeObserver 的回调会再次改变尺寸，
+    // 写一次就会多触发一轮布局，长历史下这是回流放大的主要来源。
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 1) {
+      return
+    }
+    el.scrollTop = el.scrollHeight
+    scrollTopRef.current = el.scrollTop
   }, [])
+
+  /** 同一帧内的多次尺寸变化合并成一次滚动，观察器连发时不再逐次布局 */
+  const scheduleScrollToBottom = useCallback(() => {
+    if (frameRef.current !== 0) {
+      return
+    }
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = 0
+      scrollToBottom()
+    })
+  }, [scrollToBottom])
+
+  useEffect(() => () => cancelAnimationFrame(frameRef.current), [])
 
   // 内容、键盘和输入框高度变化时，继续遵循当前跟随状态。
   useLayoutEffect(() => {
@@ -75,11 +95,11 @@ export const MessageList = ({
     if (!content || !scroll) {
       return
     }
-    const observer = new ResizeObserver(scrollToBottom)
+    const observer = new ResizeObserver(scheduleScrollToBottom)
     observer.observe(content)
     observer.observe(scroll)
     return () => observer.disconnect()
-  }, [isMobile, scrollToBottom])
+  }, [isMobile, scheduleScrollToBottom])
 
   // 切换版本后将选择器留在原位置，避免回答长短变化导致操作区跳出视口。
   useLayoutEffect(() => {
@@ -146,32 +166,32 @@ export const MessageList = ({
       <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
         <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
           <div ref={contentRef} className={styles.column}>
-            {messages.map((message, index) =>
-              message.role === 'user' ? (
-                <UserMessage
-                  key={message.id}
-                  sessionId={session.id}
-                  message={message}
-                  retryUploadId={uploadRetryId}
-                  isFirst={index === 0}
-                  isLast={index === lastIndex || index === lastIndex - 1}
-                  busy={streaming}
-                  versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                  onSelectVersion={selectVersion}
-                />
-              ) : (
-                <AssistantMessage
-                  key={message.id}
-                  sessionId={session.id}
-                  message={message}
-                  isLast={index === lastIndex}
-                  streaming={streaming && index === lastIndex}
-                  busy={streaming}
-                  versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                  onSelectVersion={selectVersion}
-                />
-              )
-            )}
+            {messages.map((message, index) => (
+              <div key={message.id} className={styles.row} data-message-row={message.id}>
+                {message.role === 'user' ? (
+                  <UserMessage
+                    sessionId={session.id}
+                    message={message}
+                    retryUploadId={uploadRetryId}
+                    isFirst={index === 0}
+                    isLast={index === lastIndex || index === lastIndex - 1}
+                    busy={streaming}
+                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                    onSelectVersion={selectVersion}
+                  />
+                ) : (
+                  <AssistantMessage
+                    sessionId={session.id}
+                    message={message}
+                    isLast={index === lastIndex}
+                    streaming={streaming && index === lastIndex}
+                    busy={streaming}
+                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                    onSelectVersion={selectVersion}
+                  />
+                )}
+              </div>
+            ))}
           </div>
         </div>
         {footer}

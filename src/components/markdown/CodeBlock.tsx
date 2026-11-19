@@ -69,6 +69,11 @@ const CodeInfoRow = ({
   )
 }
 
+/** 超过该字符数不再做语法高亮：Prism 对整块跑正则会在主线程长时间阻塞 */
+const HIGHLIGHT_LIMIT = 20_000
+/** 超过该字符数不渲染 mermaid 图，直接按代码显示 */
+const MERMAID_LIMIT = 8_000
+
 /** 代码块：语言包按需加载，不支持或尚未加载的语言按纯文本显示 */
 export const CodeBlock = memo(function CodeBlock({
   code,
@@ -79,7 +84,7 @@ export const CodeBlock = memo(function CodeBlock({
   infostring: string
   loading?: boolean
 }) {
-  const isMermaid = infostring.toLowerCase() === 'mermaid'
+  const isMermaid = infostring.toLowerCase() === 'mermaid' && code.length <= MERMAID_LIMIT
   const [showDiagram, setShowDiagram] = useState(true)
   // 语言包注册在全局 Prism 上，每次渲染直接判断；加载完成后触发一次重渲染
   const rerender = useReducer((n: number) => n + 1, 0)[1]
@@ -100,6 +105,10 @@ export const CodeBlock = memo(function CodeBlock({
     }
   }, [lang, loaded, rerender])
   const renderedHtml = useMemo(() => {
+    // 超长代码只做转义，不做词法高亮：高亮的正则扫描是长历史卡死的常见来源
+    if (code.length > HIGHLIGHT_LIMIT) {
+      return Prism.util.encode(code)
+    }
     const name = lang !== null && loaded ? lang : 'plaintext'
     return Prism.highlight(code, Prism.languages[name], name)
   }, [code, lang, loaded])

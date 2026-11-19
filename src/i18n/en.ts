@@ -184,6 +184,7 @@ export const en = {
   markdownPlainNotice: 'Long content is shown as plain text to keep the page responsive',
   markdownPlainAction: 'Format it',
   mermaidTooLarge: 'This diagram is too long, showing the source code instead',
+  loadEarlierMessages: 'Load {count} earlier messages',
   renderCrashTitle: 'This part of the conversation failed to render',
   renderCrashDetail: 'If it still fails after a refresh, export a backup in settings and start a new chat',
 } satisfies Record<keyof typeof zh, string>

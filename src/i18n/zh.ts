@@ -175,6 +175,7 @@ export const zh = {
   markdownPlainNotice: '内容较长，已切换为纯文本显示以保证流畅',
   markdownPlainAction: '格式化渲染',
   mermaidTooLarge: '流程图代码过长，已改为代码显示',
+  loadEarlierMessages: '加载更早的 {count} 条消息',
   renderCrashTitle: '这段对话渲染出错，已降级显示',
   renderCrashDetail: '刷新后仍然出错时，可在设置里导出备份，再新建对话继续',
 } as const

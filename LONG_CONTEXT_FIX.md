@@ -1,6 +1,6 @@
 # 长上下文修复说明
 
-这个 fork 针对「导入长历史后一聊天就卡死/白屏」做了五处改造，全部是前端本地行为，不改动 API 协议、不改动数据结构、不迁移已有 IndexedDB 数据。
+这个 fork 针对「导入长历史后一聊天就卡死/白屏」做了七处改造，全部是前端本地行为，不改动 API 协议、不改动数据结构、不迁移已有 IndexedDB 数据。
 
 ## 1. 请求层：上下文预算裁剪
 
@@ -32,21 +32,31 @@ localStorage.removeItem('chat-demo.contextBudget')       // 回到默认 96K
 
 视口外的消息不再参与布局与绘制，长历史滚动时不再整列重排。
 
-## 3. 超长正文降级为纯文本
+## 3. 渲染窗口：分批挂载 + 加载更早
+
+导入的长历史常有上千条消息，`messages.map()` 全量挂载等于一次提交上万个 DOM 节点。`MessageList.tsx` 改成从最后一条往前开窗：
+
+- 窗口 `WINDOW_SIZE = 40`：默认只挂载最近的 40 条。
+- 首屏同步挂载 `MOUNT_CHUNK = 12`，其余按 `requestIdleCallback`（不支持时退回 `setTimeout(16)`）每帧补 `MOUNT_STEP = 10` 条，主线程不再被一次性提交按住。
+- 窗口之外还有消息时，列表顶部出现「加载更早的 N 条消息」按钮；滚到距顶部 `120px` 以内也会自动接续，不会出现「滚到顶就到底了」的错觉。
+- 展开前记录「距底部距离」，展开后按同一距离还原滚动位置，并在下一帧再校正一次（`content-visibility` 的行进入视口后才拿到真实高度），阅读位置不跳动。
+- 切换会话时窗口重置为 40 条。
+
+## 4. 超长正文降级为纯文本
 
 `src/components/markdown/Markdown.tsx`：单条正文超过 **60,000 字符**时不再走 micromark 解析 → AST → DOM，直接以纯文本渲染，并给一个「格式化渲染」按钮让用户按需展开。这是导入长历史后首屏卡死的主要来源。
 
-## 4. 代码高亮与图表限长
+## 5. 代码高亮与图表限长
 
 - `src/components/markdown/CodeBlock.tsx`：代码块超过 **20,000 字符**时跳过 Prism 词法高亮，只做 HTML 转义；mermaid 代码超过 **8,000 字符**时按普通代码显示，不再交给 mermaid 渲染。
 - `markdown.css` 给 `.md-code-block pre` 加 `contain: paint`，滚动不再触发整页绘制失效。
 
-## 5. 滚动与落库
+## 6. 滚动与落库
 
 - `MessageList.tsx`：`ResizeObserver` 回调合并到一次 `requestAnimationFrame`，且已经贴底时不再写 `scrollTop`，切断「写入 → 尺寸变化 → 再写入」的回流链。
 - `store.ts`：`persist` 拆成 `writeSession`（真正写库）+ 250ms 合并窗口；页面隐藏、`pagehide`、导入替换前走 `flushPersist` 立即落库。长会话不再每次改动都整包克隆写一次。
 
-## 6. 渲染兜底
+## 7. 渲染兜底
 
 新增 `src/components/base/ErrorBoundary.tsx`，在 `App.tsx` 里包住 `SessionView`（`resetKey={session.id}`）。任何一条消息在渲染期抛错时只降级成一张可重试的错误卡片，不再整页白屏。
 

@@ -45,3 +45,29 @@
   content-visibility: auto;
   contain-intrinsic-size: auto 320px;
 }
+
+/*
+ * 更早消息的入口：渲染窗口外仍有消息时出现，
+ * 点击或滚到顶部时按批展开，避免一次把上千条消息挂到 DOM 上。
+ */
+.earlierBar {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 12px;
+}
+
+.earlier {
+  padding: 4px 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.earlier:hover {
+  border-color: var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-primary);
+}

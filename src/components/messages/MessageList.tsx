@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
+import { useTranslate } from '../../i18n/index.js'
 import {
   buildMessageVersions,
   getVisibleMessages,
@@ -32,6 +33,29 @@ import styles from './MessageList.module.css'
 /** 距底部小于该值时视为在底部，流式内容增长时跟随 */
 const STICKY_THRESHOLD = 40
 const EMPTY_VERSIONS: MessageVersions = { ids: [], index: -1 }
+/**
+ * 渲染窗口：从最后一条往前最多挂载这么多条消息。
+ * 导入的长历史常有上千条，一次性全量挂载会把主线程按住几十秒，
+ * 甚至因为节点过多直接让标签页失去响应。
+ */
+const WINDOW_SIZE = 40
+/** 点「加载更早」或滚动到顶部时，一次展开的条数 */
+const WINDOW_STEP = 40
+/** 首屏同步挂载的条数，其余按空闲帧分批补齐到窗口大小，避免一次提交过重 */
+const MOUNT_CHUNK = 12
+const MOUNT_STEP = 10
+/** 滚到距顶部该像素内时自动展开更早的消息 */
+const LOAD_EARLIER_THRESHOLD = 120
+
+/** 空闲时执行一次，返回取消函数：不支持 requestIdleCallback 的环境退回定时器 */
+const scheduleIdle = (run: () => void) => {
+  if (typeof window.requestIdleCallback === 'function') {
+    const handle = window.requestIdleCallback(run, { timeout: 200 })
+    return () => window.cancelIdleCallback(handle)
+  }
+  const timer = window.setTimeout(run, 16)
+  return () => window.clearTimeout(timer)
+}
 
 export const MessageList = ({
   session,
@@ -42,12 +66,17 @@ export const MessageList = ({
   streaming: boolean
   footer: React.ReactNode
 }) => {
+  const t = useTranslate()
   const isMobile = useIsMobile()
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const stickyRef = useRef(true)
   const scrollTopRef = useRef(0)
   const restoreScrollRef = useRef<{ messageId: string; top: number } | null>(null)
+  /** 展开更早消息前记录的「距底部距离」，展开后按它还原阅读位置 */
+  const stayFromBottomRef = useRef<number | null>(null)
+  const [windowSize, setWindowSize] = useState(WINDOW_SIZE)
+  const [mountBudget, setMountBudget] = useState(MOUNT_CHUNK)
   const messages = getVisibleMessages(session)
   const [previousVersions, setPreviousVersions] = useState(() =>
     buildMessageVersions(session, new Map())
@@ -101,6 +130,57 @@ export const MessageList = ({
     return () => observer.disconnect()
   }, [isMobile, scheduleScrollToBottom])
 
+  // 切换会话后回到最新一屏，渲染窗口重置为默认大小。
+  useLayoutEffect(() => {
+    setWindowSize(WINDOW_SIZE)
+    setMountBudget(MOUNT_CHUNK)
+  }, [session.id])
+
+  /** 空闲帧里把挂载条数补齐到当前窗口大小 */
+  useEffect(() => {
+    const target = Math.min(windowSize, messages.length)
+    if (mountBudget >= target) {
+      return
+    }
+    return scheduleIdle(() => {
+      setMountBudget((current) => Math.min(target, current + MOUNT_STEP))
+    })
+  }, [mountBudget, windowSize, messages.length])
+
+  /**
+   * 展开更早的消息：窗口和挂载预算同时放大，一次提交完成，
+   * 展开前记录距底部距离，提交后按同样距离还原，阅读位置不会跳动。
+   */
+  const loadEarlier = useCallback(() => {
+    const el = scrollRef.current
+    if (el) {
+      stayFromBottomRef.current = el.scrollHeight - el.scrollTop
+      stickyRef.current = false
+    }
+    setWindowSize((current) => current + WINDOW_STEP)
+    setMountBudget((current) => current + WINDOW_STEP)
+  }, [])
+
+  // 更早的消息挂载完成后按距底部距离还原滚动位置；
+  // content-visibility 的行进入视口才拿到真实高度，下一帧再校正一次。
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    const distance = stayFromBottomRef.current
+    if (!el || distance === null) {
+      return
+    }
+    stayFromBottomRef.current = null
+    el.scrollTop = Math.max(0, el.scrollHeight - distance)
+    scrollTopRef.current = el.scrollTop
+    const frame = requestAnimationFrame(() => {
+      const node = scrollRef.current
+      if (node) {
+        node.scrollTop = Math.max(0, node.scrollHeight - distance)
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [windowSize, mountBudget])
+
   // 切换版本后将选择器留在原位置，避免回答长短变化导致操作区跳出视口。
   useLayoutEffect(() => {
     const anchor = restoreScrollRef.current
@@ -134,6 +214,13 @@ export const MessageList = ({
     [session.id, streaming]
   )
 
+  const visibleCount = Math.min(messages.length, windowSize, mountBudget)
+  const offset = messages.length - visibleCount
+  const windowed = offset > 0 ? messages.slice(offset) : messages
+  const remaining = Math.max(0, messages.length - windowSize)
+  const hasWindowLeftRef = useRef(false)
+  hasWindowLeftRef.current = remaining > 0
+
   // 跨移动端断点时切换滚动层，并保持输入框及当前阅读位置。
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -154,10 +241,14 @@ export const MessageList = ({
         stickyRef.current = false
       }
       scrollTopRef.current = el.scrollTop
+      // 顶到上边界时自动接续加载，用户不需要先去找按钮。
+      if (el.scrollTop < LOAD_EARLIER_THRESHOLD && hasWindowLeftRef.current) {
+        loadEarlier()
+      }
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [isMobile, scrollToBottom])
+  }, [isMobile, scrollToBottom, loadEarlier])
 
   const lastIndex = messages.length - 1
   const uploadRetryId = getUploadRetryId(messages, streaming)
@@ -166,32 +257,42 @@ export const MessageList = ({
       <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
         <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
           <div ref={contentRef} className={styles.column}>
-            {messages.map((message, index) => (
-              <div key={message.id} className={styles.row} data-message-row={message.id}>
-                {message.role === 'user' ? (
-                  <UserMessage
-                    sessionId={session.id}
-                    message={message}
-                    retryUploadId={uploadRetryId}
-                    isFirst={index === 0}
-                    isLast={index === lastIndex || index === lastIndex - 1}
-                    busy={streaming}
-                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                    onSelectVersion={selectVersion}
-                  />
-                ) : (
-                  <AssistantMessage
-                    sessionId={session.id}
-                    message={message}
-                    isLast={index === lastIndex}
-                    streaming={streaming && index === lastIndex}
-                    busy={streaming}
-                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                    onSelectVersion={selectVersion}
-                  />
-                )}
+            {remaining > 0 ? (
+              <div className={styles.earlierBar}>
+                <button type="button" className={styles.earlier} onClick={loadEarlier}>
+                  {t('loadEarlierMessages', { count: Math.min(WINDOW_STEP, remaining) })}
+                </button>
               </div>
-            ))}
+            ) : null}
+            {windowed.map((message, index) => {
+              const absolute = offset + index
+              return (
+                <div key={message.id} className={styles.row} data-message-row={message.id}>
+                  {message.role === 'user' ? (
+                    <UserMessage
+                      sessionId={session.id}
+                      message={message}
+                      retryUploadId={uploadRetryId}
+                      isFirst={absolute === 0}
+                      isLast={absolute === lastIndex || absolute === lastIndex - 1}
+                      busy={streaming}
+                      versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                      onSelectVersion={selectVersion}
+                    />
+                  ) : (
+                    <AssistantMessage
+                      sessionId={session.id}
+                      message={message}
+                      isLast={absolute === lastIndex}
+                      streaming={streaming && absolute === lastIndex}
+                      busy={streaming}
+                      versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                      onSelectVersion={selectVersion}
+                    />
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
         {footer}
